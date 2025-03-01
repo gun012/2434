@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>테트리스 (다음 블록 & 무작위 색상)</title>
+  <style>
+    /* 전체 페이지 스타일 */
+    body {
+      margin: 0;
+      font-family: sans-serif;
+      user-select: none;
+      text-align: center;
+      background: #333;
+      color: #fff;
+    }
+
+    h1 {
+      margin-top: 20px;
+    }
+
+    /* 게임 & 사이드 정보 레이아웃 */
+    #container {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      margin-top: 30px;
+    }
+
+    /* 메인 게임 캔버스 (10x20 칸, 각 칸 20px = 200x400px) */
+    #game {
+      background-color: #000;
+      border: 2px solid #666;
+    }
+
+    /* 오른쪽 정보 영역 */
+    #info {
+      margin-left: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* 다음 블록 미리보기 캔버스 (최대 4x4 칸 정도) */
+    #next {
+      width: 80px;
+      height: 80px;
+      background-color: #000;
+      border: 2px solid #666;
+      margin-bottom: 10px;
+    }
+
+    /* 점수 표시 */
+    #score {
+      font-size: 24px;
+      margin: 20px auto;
+    }
+  </style>
+</head>
+<body>
+  <h1>테트리스 (다음 블록 &amp; 무작위 색상)</h1>
+  <div id="container">
+    <!-- 메인 게임 캔버스 -->
+    <canvas id="game" width="200" height="400"></canvas>
+
+    <!-- 오른쪽 패널(다음 블록, 점수) -->
+    <div id="info">
+      <!-- 다음 블록 미리보기 -->
+      <canvas id="next" width="80" height="80"></canvas>
+      <!-- 점수 표시 -->
+      <div id="score">점수: 0</div>
+    </div>
+  </div>
+
+  <script>
+    // =========== 캔버스 설정 ===========
+    // 메인 게임 화면
+    const canvas = document.getElementById('game');
+    const context = canvas.getContext('2d');
+    // 한 칸을 20px로 확대 (10x20칸 -> 200x400px)
+    context.scale(20, 20);
+
+    // 다음 블록 미리보기 화면
+    const canvasNext = document.getElementById('next');
+    const contextNext = canvasNext.getContext('2d');
+    // 4x4 칸 정도를 가정 -> 4칸 * 20px = 80px
+    contextNext.scale(20, 20);
+
+    // =========== 데이터 구조 ===========
+    // 보드(아레나) 크기: 10 x 20
+    function createMatrix(width, height) {
+      const matrix = [];
+      while (height--) {
+        matrix.push(new Array(width).fill(0));
+      }
+      return matrix;
+    }
+
+    // 블록 모양을 2차원 배열로 생성
+    function createPiece(type) {
+      switch (type) {
+        case 'T':
+          return [
+            [0, 1, 0],
+            [1, 1, 1],
+            [0, 0, 0],
+          ];
+        case 'O':
+          return [
+            [2, 2],
+            [2, 2],
+          ];
+        case 'L':
+          return [
+            [0, 3, 0],
+            [0, 3, 0],
+            [0, 3, 3],
+          ];
+        case 'J':
+          return [
+            [0, 4, 0],
+            [0, 4, 0],
+            [4, 4, 0],
+          ];
+        case 'I':
+          return [
+            [0, 5, 0, 0],
+            [0, 5, 0, 0],
+            [0, 5, 0, 0],
+            [0, 5, 0, 0],
+          ];
+        case 'S':
+          return [
+            [0, 6, 6],
+            [6, 6, 0],
+            [0, 0, 0],
+          ];
+        case 'Z':
+          return [
+            [7, 7, 0],
+            [0, 7, 7],
+            [0, 0, 0],
+          ];
+      }
+    }
+
+    // 보드와 현재 블록이 충돌하는지 검사
+    function collide(arena, player) {
+      const [matrix, pos] = [player.matrix, player.pos];
+      for (let y = 0; y < matrix.length; ++y) {
+        for (let x = 0; x < matrix[y].length; ++x) {
+          if (
+            matrix[y][x] !== 0 &&
+            (
+              // 보드 범위 벗어나거나
+              !arena[y + pos.y] ||
+              // 이미 블록이 있으면 충돌
+              arena[y + pos.y][x + pos.x] !== 0
+            )
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+
+    // 보드에 현재 블록을 합침
+    // -> arena에 1이 들어가면 arenaColors에도 해당 색상 저장
+    function merge(arena, arenaColors, player) {
+      const { matrix, pos, color } = player;
+      matrix.forEach((row, y) => {
+        row.forEach((value, x) => {
+          if (value !== 0) {
+            arena[y + pos.y][x + pos.x] = 1;           // 칸을 1로 설정
+            arenaColors[y + pos.y][x + pos.x] = color; // 색상 기록
+          }
+        });
+      });
+    }
+
+    // 가득 찬 줄이 있으면 제거 + 점수
+    function arenaSweep() {
+      outer: for (let y = arena.length - 1; y >= 0; --y) {
+        for (let x = 0; x < arena[y].length; ++x) {
+          if (arena[y][x] === 0) {
+            continue outer;
+          }
+        }
+        // 가득 찬 줄이면 삭제 후 맨 위에 새 줄 추가
+        const row = arena.splice(y, 1)[0].fill(0);
+        const rowColor = arenaColors.splice(y, 1)[0].fill(null);
+
+        arena.unshift(row);
+        arenaColors.unshift(rowColor);
+        ++y;
+
+        player.score += 10;
+      }
+    }
+
+    // =========== 그리기 함수들 ===========
+    // 전체 화면을 지운 뒤, 보드 + 현재 블록을 그린다
+    function draw() {
+      // 메인 화면 지움
+      context.fillStyle = '#000';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      // 보드(고정된 블록)
+      drawMatrix(arena, arenaColors, { x: 0, y: 0 }, context);
+      // 현재 움직이는 블록
+      drawPiece(player, context);
+    }
+
+    // 보드나 고정 블록을 그리는 함수
+    // arena는 0/1로, arenaColors는 색상 문자열로 관리
+    function drawMatrix(arenaData, colorData, offset, ctx) {
+      for (let y = 0; y < arenaData.length; ++y) {
+        for (let x = 0; x < arenaData[y].length; ++x) {
+          if (arenaData[y][x] !== 0) {
+            ctx.fillStyle = colorData[y][x] || '#FFF';
+            ctx.fillRect(x + offset.x, y + offset.y, 1, 1);
+          }
+        }
+      }
+    }
+
+    // 현재 움직이는 블록을 그리는 함수
+    function drawPiece(playerObj, ctx) {
+      const { matrix, pos, color } = playerObj;
+      matrix.forEach((row, y) => {
+        row.forEach((value, x) => {
+          if (value !== 0) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x + pos.x, y + pos.y, 1, 1);
+          }
+        });
+      });
+    }
+
+    // "다음 블록" 미리보기 화면 그리기
+    function drawNextPiece() {
+      // 화면 지움
+      contextNext.fillStyle = '#000';
+      contextNext.fillRect(0, 0, canvasNext.width, canvasNext.height);
+
+      // nextPiece 그리기 (최대 4x4)
+      const { matrix, color } = nextPiece;
+      // offset을 약간 줘서 중앙에 표시 (대략 1칸 가량)
+      const offset = { x: 1, y: 1 };
+      matrix.forEach((row, y) => {
+        row.forEach((value, x) => {
+          if (value !== 0) {
+            contextNext.fillStyle = color;
+            contextNext.fillRect(x + offset.x, y + offset.y, 1, 1);
+          }
+        });
+      });
+    }
+
+    // =========== 낙하 관련 루프 ===========
+    let dropCounter = 0;
+    let dropInterval = 1000; // 1초마다 한 칸 내려감
+    let lastTime = 0;
+
+    function update(time = 0) {
+      const deltaTime = time - lastTime;
+      lastTime = time;
+
+      dropCounter += deltaTime;
+      // 일정 시간이 지나면 블록 한 칸 낙하
+      if (dropCounter > dropInterval) {
+        playerDrop();
+      }
+
+      draw();
+      requestAnimationFrame(update);
+    }
+
+    // 블록 한 칸 아래로 이동
+    function playerDrop() {
+      player.pos.y++;
+      if (collide(arena, player)) {
+        player.pos.y--;
+        // 보드에 합치기
+        merge(arena, arenaColors, player);
+        // 새 블록으로 교체
+        playerReset();
+        arenaSweep();
+        updateScore();
+      }
+      dropCounter = 0;
+    }
+
+    // 좌우 이동
+    function playerMove(dir) {
+      player.pos.x += dir;
+      if (collide(arena, player)) {
+        player.pos.x -= dir;
+      }
+    }
+
+    // 회전 (벽 킥 포함)
+    function playerRotate() {
+      const pos = player.pos.x;
+      let offset = 1;
+      rotate(player.matrix);
+      while (collide(arena, player)) {
+        player.pos.x += offset;
+        offset = -(offset + (offset > 0 ? 1 : -1));
+        if (offset > player.matrix[0].length) {
+          // 불가능하면 원복
+          rotate(player.matrix);
+          player.pos.x = pos;
+          return;
+        }
+      }
+    }
+
+    // 행렬(블록) 90도 회전
+    function rotate(matrix) {
+      // 전치 -> 각 행 뒤집기
+      for (let y = 0; y < matrix.length; ++y) {
+        for (let x = 0; x < y; ++x) {
+          [matrix[x][y], matrix[y][x]] = [matrix[y][x], matrix[x][y]];
+        }
+      }
+      matrix.forEach(row => row.reverse());
+    }
+
+    // 무작위 색상 문자열 반환 (HSL or HEX)
+    function getRandomColor() {
+      // 예: 무작위로 360도 중 하나 골라, 채도/명도 고정 -> 파스텔/비비드
+      const hue = Math.floor(Math.random() * 360);
+      return `hsl(${hue}, 80%, 60%)`;
+    }
+
+    // 새 블록을 가져오고, 다음 블록도 갱신
+    function playerReset() {
+      // nextPiece -> 현재 player로
+      player.matrix = nextPiece.matrix;
+      player.color = nextPiece.color;
+      player.pos.y = 0;
+      player.pos.x = (arena[0].length / 2 | 0) - (player.matrix[0].length / 2 | 0);
+
+      // 새 nextPiece 생성
+      nextPiece = {
+        matrix: createPiece(randomPieceType()),
+        color: getRandomColor(),
+      };
+
+      // 미리보기 업데이트
+      drawNextPiece();
+
+      // 배치 직후 충돌하면 보드 초기화(게임 오버)
+      if (collide(arena, player)) {
+        arena.forEach(row => row.fill(0));
+        arenaColors.forEach(row => row.fill(null));
+        player.score = 0;
+        updateScore();
+      }
+    }
+
+    // 무작위 블록 타입
+    function randomPieceType() {
+      const pieces = 'TJLOSZI';
+      return pieces[(pieces.length * Math.random()) | 0];
+    }
+
+    // 점수 업데이트
+    function updateScore() {
+      document.getElementById('score').innerText = '점수: ' + player.score;
+    }
+
+    // =========== 초기화 ===========
+    // 10x20 보드
+    const arena = createMatrix(10, 20);
+    // 보드의 각 칸에 대응하는 색상 저장 (null이면 빈 칸)
+    const arenaColors = createMatrix(10, 20).map(row => row.map(() => null));
+
+    // 플레이어 상태
+    const player = {
+      pos: { x: 0, y: 0 },
+      matrix: null,
+      color: '#fff', // 임시
+      score: 0,
+    };
+
+    // "다음 블록" (nextPiece) 미리 생성
+    let nextPiece = {
+      matrix: createPiece(randomPieceType()),
+      color: getRandomColor(),
+    };
+
+    // 키보드 조작
+    document.addEventListener('keydown', event => {
+      switch (event.keyCode) {
+        case 37: // 왼쪽
+          playerMove(-1);
+          break;
+        case 39: // 오른쪽
+          playerMove(1);
+          break;
+        case 40: // 아래
+          playerDrop();
+          break;
+        case 38: // 위 (회전)
+          playerRotate();
+          break;
+      }
+    });
+
+    // 초기화
+    playerReset(); // -> nextPiece 갱신 + 미리보기 업데이트
+    updateScore(); // 점수 0으로 초기 표시
+    update();      // 게임 루프 시작
+  </script>
+</body>
+</html>
